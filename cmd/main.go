@@ -13,17 +13,17 @@ import (
 func main() {
 	// Initialize a DataSource (Yahoo Finance in this case)
 	//dataSource := clients.NewAlphaVantageClient("9EQCLVN4UJLBPQU9")
-	//dataSource := clients.NewTwelveDataClient("228c3167a61f4916b63323025b5f2165")
-	dataSource := clients.NewYahooFinanceDataSource()
+	dataSource := clients.NewTwelveDataClient("228c3167a61f4916b63323025b5f2165")
+	//dataSource := clients.NewYahooFinanceDataSource()
 	storage := storage.NewInMemoryStorage()
 
 	// Set the time range (example: last 30 days)
-	end := time.Now().Unix()
-	start := end - 365*24*3600
+	end := time.Now()
+	start := end.Add(-time.Hour * 24 * 30)
 
 	// Fetch data for a symbol (e.g., "AAPL") using the DataSource interface
-	//marketData, err := dataSource.FetchMinuteData("AAPL", start, end, "1min")
-	marketData, err := dataSource.Fetch("TSLA", start, end)
+	marketData, err := dataSource.FetchMinuteData("AAPL", start.Unix(), end.Unix(), "15min")
+	//marketData, err := dataSource.Fetch("TSLA", start, end)
 	fmt.Println(marketData)
 	//marketData, err := dataSource.Fetch("FIVE", start, end)
 	if err != nil {
@@ -44,10 +44,20 @@ func main() {
 	fmt.Println(df)
 
 	initialInvest := 10000.0
-	markovStrategy := strategies.NewMarkovChainStrategy()
-	markovStrategy.Build(df)
-	// Run backtest
-	result, err := backtest.Backtest(df, markovStrategy.Run, time.Hour*24, initialInvest)
+	// Define individual strategies
+	markovStrategy := strategies.NewMarkovChainStrategy(2)
+	markovStrategy.Build(df) // Build the Markov model
+
+	movingAverageStrategy := strategies.MovingAverageCrossoverStrategy
+
+	// Define an ensemble strategy using the individual strategies
+	ensemble := strategies.NewEnsembleStrategy([]strategies.StrategyFunc{
+		markovStrategy.Run,
+		movingAverageStrategy,
+	}, []float64{0.5, 0.5}) // Equal weights
+
+	// Run the backtest using the ensemble strategy
+	result, err := backtest.Backtest(df, ensemble.Run, time.Minute*15, initialInvest)
 	if err != nil {
 		fmt.Printf("Backtest error: %v\n", err)
 		return

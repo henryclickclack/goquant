@@ -3,6 +3,7 @@ package strategies
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 
 	backtest_types "goquant/pkg/backtest"
 
@@ -13,31 +14,33 @@ import (
 type MarkovChainStrategy struct {
 	TransitionMatrix map[string]map[string]float64
 	States           []string
+	Depth            int
 }
 
-// NewMarkovChainStrategy initializes a new MarkovChainStrategy.
-func NewMarkovChainStrategy() *MarkovChainStrategy {
+// NewMarkovChainStrategy initializes a new MarkovChainStrategy with a specified depth.
+func NewMarkovChainStrategy(depth int) *MarkovChainStrategy {
 	return &MarkovChainStrategy{
 		TransitionMatrix: make(map[string]map[string]float64),
 		States:           []string{"Up", "Down", "Unchanged"},
+		Depth:            depth,
 	}
 }
 
 // Build constructs the transition matrix based on the entire historical dataframe.
 func (mcs *MarkovChainStrategy) Build(df dataframe.DataFrame) {
-	mcs.TransitionMatrix = calculateTransitionMatrix(df, mcs.States)
+	mcs.TransitionMatrix = calculateTransitionMatrix(df, mcs.States, mcs.Depth)
 }
 
 // Run applies the Markov Chain strategy to predict the next state and generate trading signals.
 func (mcs *MarkovChainStrategy) Run(df dataframe.DataFrame) backtest_types.StrategyAction {
-	if df.Nrow() < 2 {
+	if df.Nrow() < mcs.Depth {
 		return "Hold"
 	}
-	// Get the current state
-	currentState := getCurrentState(df)
+	// Get the current sequence of states
+	currentSequence := getCurrentSequence(df, mcs.Depth)
 
 	// Predict the next state
-	nextState := predictNextState(currentState, mcs.States, mcs.TransitionMatrix)
+	nextState := predictNextState(currentSequence, mcs.States, mcs.TransitionMatrix)
 
 	// Generate a signal based on the predicted next state
 	switch nextState {
@@ -50,44 +53,57 @@ func (mcs *MarkovChainStrategy) Run(df dataframe.DataFrame) backtest_types.Strat
 	}
 }
 
-// calculateTransitionMatrix calculates the transition matrix from historical data.
-func calculateTransitionMatrix(df dataframe.DataFrame, states []string) map[string]map[string]float64 {
+// calculateTransitionMatrix calculates the transition matrix from historical data with depth n.
+func calculateTransitionMatrix(df dataframe.DataFrame, states []string, depth int) map[string]map[string]float64 {
 	transitionMatrix := make(map[string]map[string]float64)
 
 	for _, state := range states {
-		transitionMatrix[state] = make(map[string]float64)
 		for _, nextState := range states {
-			transitionMatrix[state][nextState] = 0
+			transitionMatrix[state] = make(map[string]float64)
+			fmt.Printf("State: %s, Next State: %s\n", state, nextState)
 		}
 	}
 
-	totalTransitions := make(map[string]int)
 	prices := df.Col("Close").Float()
+	totalTransitions := make(map[string]int)
 
-	for i := 1; i < len(prices)-1; i++ { // Adjusted to avoid out-of-bounds error
-		currentState := getState(prices[i-1], prices[i])
+	// Build the transition matrix
+	for i := depth; i < len(prices)-1; i++ {
+		currentSequence := getStateSequence(prices[i-depth : i])
 		nextState := getState(prices[i], prices[i+1])
 
-		transitionMatrix[currentState][nextState]++
-		totalTransitions[currentState]++
+		if transitionMatrix[currentSequence] == nil {
+			transitionMatrix[currentSequence] = make(map[string]float64)
+		}
+		transitionMatrix[currentSequence][nextState]++
+		totalTransitions[currentSequence]++
 	}
 
 	// Normalize the transition matrix to get probabilities
-	for _, state := range states {
+	for sequence := range transitionMatrix {
 		for _, nextState := range states {
-			if totalTransitions[state] > 0 {
-				transitionMatrix[state][nextState] /= float64(totalTransitions[state])
+			if totalTransitions[sequence] > 0 {
+				transitionMatrix[sequence][nextState] /= float64(totalTransitions[sequence])
 			}
 		}
 	}
-	fmt.Println(transitionMatrix)
+
 	return transitionMatrix
 }
 
-// getCurrentState determines the current state based on the last two price points.
-func getCurrentState(df dataframe.DataFrame) string {
+// getCurrentSequence determines the current sequence of states based on the last n price points.
+func getCurrentSequence(df dataframe.DataFrame, depth int) string {
 	prices := df.Col("Close").Float()
-	return getState(prices[len(prices)-2], prices[len(prices)-1])
+	return getStateSequence(prices[len(prices)-depth:])
+}
+
+// getStateSequence converts a slice of prices into a sequence of states.
+func getStateSequence(prices []float64) string {
+	states := []string{}
+	for i := 1; i < len(prices); i++ {
+		states = append(states, getState(prices[i-1], prices[i]))
+	}
+	return strings.Join(states, "-")
 }
 
 // getState determines the state based on price movements.
@@ -100,18 +116,38 @@ func getState(prevPrice, currPrice float64) string {
 	return "Unchanged"
 }
 
-// predictNextState predicts the next state based on the current state and the transition matrix.
-func predictNextState(currentState string, states []string, transitionMatrix map[string]map[string]float64) string {
+// predictNextState predicts the next state based on the current sequence and the transition matrix.
+func predictNextState(currentSequence string, states []string, transitionMatrix map[string]map[string]float64) string {
 	prob := rand.Float64()
 	cumulativeProb := 0.0
 
 	for _, nextState := range states {
-		cumulativeProb += transitionMatrix[currentState][nextState]
+		cumulativeProb += transitionMatrix[currentSequence][nextState]
 		if prob <= cumulativeProb {
 			return nextState
 		}
 	}
 
 	// Default to current state if prediction fails
-	return currentState
+	return strings.Split(currentSequence, "-")[0] // Return the first state in the sequence
+}
+
+// predictNextStateMax predicts the next state with the highest probability based on the current sequence and the transition matrix.
+//
+// currentSequence - The current sequence of states.
+// states - A list of possible next states.
+// transitionMatrix - A map of state transitions with their corresponding probabilities.
+// Returns the next state with the highest probability.
+func predictNextStateMax(currentSequence string, states []string, transitionMatrix map[string]map[string]float64) string {
+	maxProb := 0.0
+	bestState := states[0]
+
+	for _, nextState := range states {
+		if transitionMatrix[currentSequence][nextState] > maxProb {
+			maxProb = transitionMatrix[currentSequence][nextState]
+			bestState = nextState
+		}
+	}
+
+	return bestState
 }
